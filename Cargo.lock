@@ -5,7 +5,7 @@ version = 3
 [[package]]
 name = "arduino-hal"
 version = "0.1.0"
-source = "git+https://github.com/rahix/avr-hal?rev=7dfa6d322b9df98b2d98afe0e14a97afe0187ac1#7dfa6d322b9df98b2d98afe0e14a97afe0187ac1"
+source = "git+https://github.com/rahix/avr-hal?rev=7b3e82a15e97e657559ec82cf934ba36c38312ec#7b3e82a15e97e657559ec82cf934ba36c38312ec"
 dependencies = [
  "atmega-hal",
  "avr-device",
@@ -19,7 +19,7 @@ dependencies = [
 [[package]]
 name = "atmega-hal"
 version = "0.1.0"
-source = "git+https://github.com/rahix/avr-hal?rev=7dfa6d322b9df98b2d98afe0e14a97afe0187ac1#7dfa6d322b9df98b2d98afe0e14a97afe0187ac1"
+source = "git+https://github.com/rahix/avr-hal?rev=7b3e82a15e97e657559ec82cf934ba36c38312ec#7b3e82a15e97e657559ec82cf934ba36c38312ec"
 dependencies = [
  "avr-device",
  "avr-hal-generic",
@@ -51,7 +51,7 @@ dependencies = [
 [[package]]
 name = "avr-hal-generic"
 version = "0.1.0"
-source = "git+https://github.com/rahix/avr-hal?rev=7dfa6d322b9df98b2d98afe0e14a97afe0187ac1#7dfa6d322b9df98b2d98afe0e14a97afe0187ac1"
+source = "git+https://github.com/rahix/avr-hal?rev=7b3e82a15e97e657559ec82cf934ba36c38312ec#7b3e82a15e97e657559ec82cf934ba36c38312ec"
 dependencies = [
  "avr-device",
  "cfg-if 0.1.10",
@@ -103,6 +103,7 @@ name = "lagom-firmware"
 version = "0.1.0"
 dependencies = [
  "arduino-hal",
+ "avr-hal-generic",
  "embedded-hal",
  "nb 0.1.3",
  "panic-halt",
