@@ -103,6 +103,7 @@ name = "lagom-firmware"
 version = "0.1.0"
 dependencies = [
  "arduino-hal",
+ "avr-device",
  "avr-hal-generic",
  "embedded-hal",
  "nb 0.1.3",

@@ -11,6 +11,7 @@ test = false
 bench = false
 
 [dependencies]
+avr-device = "0.5.2"
 panic-halt = "0.2.0"
 ufmt = "0.1.0"
 nb = "0.1.2"
@@ -21,11 +22,9 @@ git = "https://github.com/rahix/avr-hal"
 rev = "7b3e82a15e97e657559ec82cf934ba36c38312ec"
 features = ["sparkfun-promicro"]
 
-
 [dependencies.avr-hal-generic]
 git = "https://github.com/rahix/avr-hal"
 rev = "7b3e82a15e97e657559ec82cf934ba36c38312ec"
-
 
 # Configure the build for minimal size - AVRs have very little program memory
 [profile.dev]

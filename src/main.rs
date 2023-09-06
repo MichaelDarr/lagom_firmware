@@ -8,7 +8,7 @@ mod clock;
 use embedded_hal::prelude::_embedded_hal_blocking_delay_DelayMs;
 use panic_halt as _;
 
-#[arduino_hal::entry]
+#[avr_device::entry]
 fn main() -> ! {
     // Example code - blink LED
     let dp = arduino_hal::Peripherals::take().unwrap();
