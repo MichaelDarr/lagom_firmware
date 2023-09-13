@@ -1,9 +1,7 @@
 #![no_std]
 #![no_main]
-
 #![feature(lang_items)]
 #![feature(abi_avr_interrupt)]
-
 #![allow(internal_features)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
@@ -21,7 +19,7 @@ use arduino_hal::{
 };
 use atmega_usbd::{SuspendNotifier, UsbBus};
 use avr_device::interrupt;
-use descriptor::{COLUMN_COUNT, LayoutKey, ROW_COUNT};
+use descriptor::{LayoutKey, COLUMN_COUNT, ROW_COUNT};
 use usb_device::{
     class_prelude::UsbBusAllocator,
     device::{UsbDevice, UsbDeviceBuilder, UsbVidPid},
@@ -71,6 +69,16 @@ fn main() -> ! {
             mux1: pins.d7.into_output().downgrade(),
             mux2: pins.d8.into_output().downgrade(),
             mux3: pins.d9.into_output().downgrade(),
+            rotarty_encoders: [
+                RotaryEncoder::new(
+                    pins.d4.into_pull_up_input().downgrade(),
+                    pins.d5.into_pull_up_input().downgrade(),
+                ),
+                RotaryEncoder::new(
+                    pins.a3.into_pull_up_input().downgrade(),
+                    pins.a2.into_pull_up_input().downgrade(),
+                ),
+            ],
             rows: [
                 pins.d10.into_pull_up_input().downgrade(),
                 pins.d14.into_pull_up_input().downgrade(),
@@ -141,6 +149,7 @@ struct UsbContext<S: SuspendNotifier> {
     mux2: Pin<Output>,
     mux3: Pin<Output>,
     rows: [Pin<Input<PullUp>>; ROW_COUNT],
+    rotarty_encoders: [RotaryEncoder; 2],
     cur_report: KeyboardReport,
     next_report: KeyboardReport,
 }
@@ -166,6 +175,17 @@ impl<S: SuspendNotifier> UsbContext<S> {
         let mut report = BLANK_REPORT;
         let mut report_keycode_idx: usize = 0;
 
+        let encoder_0_res = self.rotarty_encoders[1].poll();
+        if encoder_0_res.is_some() {
+            let mut rotary_report = BLANK_REPORT;
+            if encoder_0_res.unwrap() == RotaryEncoderDirection::Clockwise {
+                rotary_report.keycodes[0] = LayoutKey::VlUp as u8;
+            } else {
+                rotary_report.keycodes[0] = LayoutKey::VlDn as u8;
+            }
+            self.hid_class.push_input(&rotary_report).ok();
+        }
+
         // Start with demultiplexer C2 (cols 0-7)
         self.mux3.set_low();
 
@@ -176,7 +196,7 @@ impl<S: SuspendNotifier> UsbContext<S> {
                 self.mux3.set_high();
             }
 
-            // Target the column's position by passing its binary representation to the demultiplexer 
+            // Target the column's position by passing its binary representation to the demultiplexer
             let pos = col % MUX_COLUMN_COUNT;
             if (pos & 1) == 1 {
                 self.mux0.set_high();
@@ -264,4 +284,77 @@ fn reports_are_equal(a: KeyboardReport, b: KeyboardReport) -> bool {
         }
     }
     true
+}
+
+struct RotaryEncoder {
+    a: Pin<Input<PullUp>>,
+    b: Pin<Input<PullUp>>,
+    progress: RotaryEncoderProgress,
+    state: [bool; 2],
+}
+
+#[derive(PartialEq, Eq)]
+enum RotaryEncoderProgress {
+    AwaitingA,
+    AwaitingB,
+    ReadyToFire,
+    Idle,
+}
+
+#[derive(PartialEq, Eq)]
+enum RotaryEncoderDirection {
+    Clockwise,
+    CounterClockwise,
+}
+
+impl RotaryEncoder {
+    pub fn new(a: Pin<Input<PullUp>>, b: Pin<Input<PullUp>>) -> RotaryEncoder {
+        let a_state = a.is_low();
+        let b_state = b.is_low();
+        RotaryEncoder {
+            a,
+            b,
+            progress: RotaryEncoderProgress::Idle,
+            state: [a_state, b_state],
+        }
+    }
+
+    pub fn poll(&mut self) -> Option<RotaryEncoderDirection> {
+        let a_state = self.a.is_low();
+        let b_state = self.b.is_low();
+        if a_state != self.state[0] || b_state != self.state[1] {
+            if !a_state && !b_state {
+                if self.progress == RotaryEncoderProgress::ReadyToFire {
+                    self.progress = RotaryEncoderProgress::Idle;
+                    let direction = if !self.state[0] {
+                        RotaryEncoderDirection::CounterClockwise
+                    } else {
+                        RotaryEncoderDirection::Clockwise
+                    };
+                    self.state = [a_state, b_state];
+                    return Some(direction);
+                }
+                self.progress = RotaryEncoderProgress::Idle;
+            } else if !a_state {
+                if self.progress == RotaryEncoderProgress::AwaitingA {
+                    self.progress = RotaryEncoderProgress::ReadyToFire;
+                } else if self.progress == RotaryEncoderProgress::ReadyToFire {
+                    self.progress = RotaryEncoderProgress::AwaitingA;
+                } else if self.progress == RotaryEncoderProgress::Idle {
+                    self.progress = RotaryEncoderProgress::AwaitingB;
+                }
+            } else if !b_state {
+                if self.progress == RotaryEncoderProgress::AwaitingB {
+                    self.progress = RotaryEncoderProgress::ReadyToFire;
+                } else if self.progress == RotaryEncoderProgress::ReadyToFire {
+                    self.progress = RotaryEncoderProgress::AwaitingB;
+                } else if self.progress == RotaryEncoderProgress::Idle {
+                    self.progress = RotaryEncoderProgress::AwaitingA;
+                }
+            }
+
+            self.state = [a_state, b_state];
+        }
+        None
+    }
 }
