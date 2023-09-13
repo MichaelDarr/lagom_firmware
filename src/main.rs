@@ -8,6 +8,8 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 mod std_stub;
+mod keymap;
+mod descriptor;
 
 use arduino_hal::{
     pac::PLL,
@@ -18,6 +20,7 @@ use arduino_hal::{
 };
 use atmega_usbd::{SuspendNotifier, UsbBus};
 use avr_device::{asm::sleep, interrupt};
+use descriptor::{COLUMN_COUNT, LayoutKey, ROW_COUNT};
 use usb_device::{
     class_prelude::UsbBusAllocator,
     device::{UsbDevice, UsbDeviceBuilder, UsbVidPid},
@@ -58,21 +61,21 @@ fn main() -> ! {
 
     unsafe {
         USB_CTX = Some(UsbContext {
-            current_index: 0,
             usb_device,
             hid_class,
             indicator: pins.led_rx.into_output().downgrade(),
+            layout: keymap::LAYOUT,
             mux0: pins.d6.into_output().downgrade(),
             mux1: pins.d7.into_output().downgrade(),
             mux2: pins.d8.into_output().downgrade(),
             mux3: pins.d9.into_output().downgrade(),
-            row0: pins.d10.into_pull_up_input().downgrade(),
-            row1: pins.d14.into_pull_up_input().downgrade(),
-            row2: pins.d16.into_pull_up_input().downgrade(),
-            row3: pins.d15.into_pull_up_input().downgrade(),
-            row4: pins.a0.into_pull_up_input().downgrade(),
-            trigger: pins.d2.into_pull_up_input().downgrade(),
-            pressed: false,
+            rows: [
+                pins.d10.into_pull_up_input().downgrade(),
+                pins.d14.into_pull_up_input().downgrade(),
+                pins.d16.into_pull_up_input().downgrade(),
+                pins.d15.into_pull_up_input().downgrade(),
+                pins.a0.into_pull_up_input().downgrade(),
+            ],
         });
     }
 
@@ -117,18 +120,12 @@ struct UsbContext<S: SuspendNotifier> {
     usb_device: UsbDevice<'static, UsbBus<S>>,
     hid_class: HIDClass<'static, UsbBus<S>>,
     indicator: Pin<Output>,
+    layout: descriptor::LayoutGrid,
     mux0: Pin<Output>,
     mux1: Pin<Output>,
     mux2: Pin<Output>,
     mux3: Pin<Output>,
-    row0: Pin<Input<PullUp>>,
-    row1: Pin<Input<PullUp>>,
-    row2: Pin<Input<PullUp>>,
-    row3: Pin<Input<PullUp>>,
-    row4: Pin<Input<PullUp>>,
-    trigger: Pin<Input<PullUp>>,
-    current_index: usize,
-    pressed: bool,
+    rows: [Pin<Input<PullUp>>; ROW_COUNT],
 }
 
 const BLANK_REPORT: KeyboardReport = KeyboardReport {
@@ -138,47 +135,65 @@ const BLANK_REPORT: KeyboardReport = KeyboardReport {
     keycodes: [0; 6],
 };
 
+const MUX_COLUMN_COUNT: usize = COLUMN_COUNT / 2;
+
 impl<S: SuspendNotifier> UsbContext<S> {
     fn poll(&mut self) {
-        if self.trigger.is_low() {
-            let mut report = BLANK_REPORT;
+        let mut report = BLANK_REPORT;
+        let mut report_keycode_idx: usize = 0;
 
-            if !self.pressed && self.current_index < 5 {
-                // Select Y0 (col 0/8)
+        // Start with demultiplexer C2 (cols 0-7)
+        self.mux3.set_low();
+
+        // Iterate over each matrix column
+        for col in 0..COLUMN_COUNT {
+            // After reading the first set, switch to the demultiplexer C1 (cols 8-15)
+            if col == MUX_COLUMN_COUNT {
+                self.mux3.set_high();
+            }
+
+            // Target the column's position by passing its binary representation to the demultiplexer 
+            let pos = col % MUX_COLUMN_COUNT;
+            if (pos & 1) == 1 {
+                self.mux0.set_high();
+            } else {
                 self.mux0.set_low();
+            }
+            if ((pos >> 1) & 1) == 1 {
+                self.mux1.set_high();
+            } else {
                 self.mux1.set_low();
+            }
+            if ((pos >> 2) & 1) == 1 {
+                self.mux2.set_high();
+            } else {
                 self.mux2.set_low();
-        
-                // Select C2 (cols 0-7)
-                self.mux3.set_low();
-        
-                // Read row values
-                let row_values = [
-                    self.row0.is_low(),
-                    self.row1.is_low(),
-                    self.row2.is_low(),
-                    self.row3.is_low(),
-                    self.row4.is_low(),
-                ];
-    
-                if row_values[self.current_index] {
-                    report.keycodes[0] = 0x0f;
-                } else {
-                    report.keycodes[0] = 0x0b;
+            }
+
+            // Check for active rows within the column
+            for row in 0..ROW_COUNT {
+                if self.rows[row].is_low() {
+                    // If the key is a modifier, apply the appropriate bitmask instead of recording it as a keystroke.
+                    // https://wiki.osdev.org/USB_Human_Interface_Devices#Report_format
+                    match self.layout[row][col] {
+                        LayoutKey::CtrL => report.modifier |= 0b0000_0001,
+                        LayoutKey::SftL => report.modifier |= 0b0000_0010,
+                        LayoutKey::AltL => report.modifier |= 0b0000_0100,
+                        LayoutKey::GuiL => report.modifier |= 0b0000_1000,
+                        LayoutKey::CtrR => report.modifier |= 0b0001_0000,
+                        LayoutKey::SftR => report.modifier |= 0b0010_0000,
+                        LayoutKey::AltR => report.modifier |= 0b0100_0000,
+                        LayoutKey::GuiR => report.modifier |= 0b1000_0000,
+                        _ => {
+                            report.keycodes[report_keycode_idx] = self.layout[row][col] as u8;
+                            report_keycode_idx += 1;
+                        }
+                    }
                 }
             }
-            
-            if self.hid_class.push_input(&report).is_ok() {
-                if self.pressed && self.current_index < 5 {
-                    self.current_index += 1;
-                }
-                self.pressed = !self.pressed;
-            }
-        } else {
-            self.current_index = 0;
-            self.pressed = false;
-            self.hid_class.push_input(&BLANK_REPORT).ok();
         }
+
+        self.hid_class.push_input(&report).ok();
 
         if self.usb_device.poll(&mut [&mut self.hid_class]) {
             let mut report_buf = [0u8; 1];
