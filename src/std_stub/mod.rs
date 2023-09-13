@@ -8,15 +8,11 @@ use arduino_hal::{delay_ms, pins, Peripherals};
 fn panic(_info: &PanicInfo) -> ! {
     let dp = unsafe { Peripherals::steal() };
     let pins = pins!(dp);
-    let mut status = pins.d15.into_output();
+
+    // Flash the LED to indicate a panic
+    let mut led = pins.led_tx.into_output();
     loop {
-        status.set_high();
-        delay_ms(100);
-        status.set_low();
-        delay_ms(100);
-        status.set_high();
-        delay_ms(300);
-        status.set_low();
+        led.toggle();
         delay_ms(500);
     }
 }
