@@ -32,12 +32,8 @@ fn main() -> ! {
     let dp = avr_device::atmega32u4::Peripherals::take().unwrap();
     let pins = arduino_hal::pins!(dp);
 
-    // BEGIN EXAMPLE CODE
-    // https://github.com/agausmann/atmega-usbd/blob/5fc68ca813ce0a37dab65dd4d66efe1ec125f2a8/examples/arduino_keyboard.rs#L59
     let pll = dp.PLL;
     let usb = dp.USB_DEVICE;
-    let indicator = pins.led_rx.into_output();
-    let trigger = pins.d2.into_pull_up_input();
 
     // Configure PLL interface
     // prescale 16MHz crystal -> 8MHz
@@ -62,57 +58,31 @@ fn main() -> ! {
 
     unsafe {
         USB_CTX = Some(UsbContext {
+            current_index: 0,
             usb_device,
             hid_class,
-            current_index: 0,
+            indicator: pins.led_rx.into_output().downgrade(),
+            mux0: pins.d6.into_output().downgrade(),
+            mux1: pins.d7.into_output().downgrade(),
+            mux2: pins.d8.into_output().downgrade(),
+            mux3: pins.d9.into_output().downgrade(),
+            row0: pins.d10.into_pull_up_input().downgrade(),
+            row1: pins.d14.into_pull_up_input().downgrade(),
+            row2: pins.d16.into_pull_up_input().downgrade(),
+            row3: pins.d15.into_pull_up_input().downgrade(),
+            row4: pins.a0.into_pull_up_input().downgrade(),
+            trigger: pins.d2.into_pull_up_input().downgrade(),
             pressed: false,
-            indicator: indicator.downgrade(),
-            trigger: trigger.downgrade(),
         });
     }
 
     unsafe { interrupt::enable() };
-    // END EXAMPLE CODE
-
-    let mut mux0 = pins.d6.into_output();
-    let mut mux1 = pins.d7.into_output();
-    let mut mux2 = pins.d8.into_output();
-    let mut mux3 = pins.d9.into_output();
-
-    // let row0 = pins.d10.into_pull_up_input();
-    // let row1 = pins.d16.into_pull_up_input();
-    // let row2 = pins.d14.into_pull_up_input();
-    // let row3 = pins.d15.into_pull_up_input();
-    // let row4 = pins.a0.into_pull_up_input();
-
-    // Select Y0 (col 0/8)
-    mux0.set_low();
-    mux1.set_low();
-    mux2.set_low();
-
-    // Select C2 (cols 0-7)
-    mux3.set_low();
 
     loop {
-        // let values = [
-        //     row0.is_low(),
-        //     row1.is_low(),
-        //     row2.is_low(),
-        //     row3.is_low(),
-        //     row4.is_low(),
-        // ];
-
-        // for (i, v) in values.iter().enumerate() {
-        //     ufmt::uwriteln!(&mut serial, "row{}: {}", i, v).void_unwrap()
-        // }
-        // arduino_hal::delay_ms(1000)
         sleep();
     }
 }
 
-// BEGIN EXAMPLE CODE
-// https://github.com/agausmann/atmega-usbd/blob/5fc68ca813ce0a37dab65dd4d66efe1ec125f2a8/examples/arduino_keyboard.rs#L103
-const PAYLOAD: &[u8] = b"Hello World";
 static mut USB_CTX: Option<UsbContext<PLL>> = None;
 
 #[interrupt(atmega32u4)]
@@ -146,27 +116,60 @@ unsafe fn poll_usb() {
 struct UsbContext<S: SuspendNotifier> {
     usb_device: UsbDevice<'static, UsbBus<S>>,
     hid_class: HIDClass<'static, UsbBus<S>>,
+    indicator: Pin<Output>,
+    mux0: Pin<Output>,
+    mux1: Pin<Output>,
+    mux2: Pin<Output>,
+    mux3: Pin<Output>,
+    row0: Pin<Input<PullUp>>,
+    row1: Pin<Input<PullUp>>,
+    row2: Pin<Input<PullUp>>,
+    row3: Pin<Input<PullUp>>,
+    row4: Pin<Input<PullUp>>,
+    trigger: Pin<Input<PullUp>>,
     current_index: usize,
     pressed: bool,
-    indicator: Pin<Output>,
-    trigger: Pin<Input<PullUp>>,
 }
+
+const BLANK_REPORT: KeyboardReport = KeyboardReport {
+    modifier: 0,
+    reserved: 0,
+    leds: 0,
+    keycodes: [0; 6],
+};
 
 impl<S: SuspendNotifier> UsbContext<S> {
     fn poll(&mut self) {
         if self.trigger.is_low() {
-            let next_report = if self.pressed {
-                BLANK_REPORT
-            } else {
-                PAYLOAD
-                    .get(self.current_index)
-                    .copied()
-                    .and_then(ascii_to_report)
-                    .unwrap_or(BLANK_REPORT)
-            };
+            let mut report = BLANK_REPORT;
 
-            if self.hid_class.push_input(&next_report).is_ok() {
-                if self.pressed && self.current_index < PAYLOAD.len() {
+            if !self.pressed && self.current_index < 5 {
+                // Select Y0 (col 0/8)
+                self.mux0.set_low();
+                self.mux1.set_low();
+                self.mux2.set_low();
+        
+                // Select C2 (cols 0-7)
+                self.mux3.set_low();
+        
+                // Read row values
+                let row_values = [
+                    self.row0.is_low(),
+                    self.row1.is_low(),
+                    self.row2.is_low(),
+                    self.row3.is_low(),
+                    self.row4.is_low(),
+                ];
+    
+                if row_values[self.current_index] {
+                    report.keycodes[0] = 0x0f;
+                } else {
+                    report.keycodes[0] = 0x0b;
+                }
+            }
+            
+            if self.hid_class.push_input(&report).is_ok() {
+                if self.pressed && self.current_index < 5 {
                     self.current_index += 1;
                 }
                 self.pressed = !self.pressed;
@@ -190,29 +193,3 @@ impl<S: SuspendNotifier> UsbContext<S> {
         }
     }
 }
-
-const BLANK_REPORT: KeyboardReport = KeyboardReport {
-    modifier: 0,
-    reserved: 0,
-    leds: 0,
-    keycodes: [0; 6],
-};
-
-fn ascii_to_report(c: u8) -> Option<KeyboardReport> {
-    let (keycode, shift) = if c.is_ascii_alphabetic() {
-        (c.to_ascii_lowercase() - b'a' + 0x04, c.is_ascii_uppercase())
-    } else {
-        match c {
-            b' ' => (0x2c, false),
-            _ => return None,
-        }
-    };
-
-    let mut report = BLANK_REPORT;
-    if shift {
-        report.modifier |= 0x2;
-    }
-    report.keycodes[0] = keycode;
-    Some(report)
-}
-// END EXAMPLE CODE
