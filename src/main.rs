@@ -7,9 +7,9 @@
 #![allow(internal_features)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
-mod std_stub;
-mod keymap;
 mod descriptor;
+mod keymap;
+mod std_stub;
 
 use arduino_hal::{
     delay_ms,
@@ -20,7 +20,7 @@ use arduino_hal::{
     },
 };
 use atmega_usbd::{SuspendNotifier, UsbBus};
-use avr_device::{asm::sleep, interrupt};
+use avr_device::interrupt;
 use descriptor::{COLUMN_COUNT, LayoutKey, ROW_COUNT};
 use usb_device::{
     class_prelude::UsbBusAllocator,
@@ -77,15 +77,28 @@ fn main() -> ! {
                 pins.d15.into_pull_up_input().downgrade(),
                 pins.a0.into_pull_up_input().downgrade(),
             ],
+            cur_report: BLANK_REPORT,
+            next_report: BLANK_REPORT,
         });
     }
 
     unsafe { interrupt::enable() };
 
     loop {
-        sleep();
+        unsafe {
+            if MILLI_COUNTDOWN > 2 {
+                MILLI_COUNTDOWN -= 2;
+            }
+        }
+        delay_ms(2)
     }
 }
+
+// While it's positive, this constantly counts down to 1 or 0 in increments of 2. It is used to
+// maintain a debouncing system for keystrokes.
+//
+// This should be replaced with a proper clock - it's likely buggy and potententially dangerous.
+static mut MILLI_COUNTDOWN: u32 = 0;
 
 static mut USB_CTX: Option<UsbContext<PLL>> = None;
 
@@ -127,6 +140,8 @@ struct UsbContext<S: SuspendNotifier> {
     mux2: Pin<Output>,
     mux3: Pin<Output>,
     rows: [Pin<Input<PullUp>>; ROW_COUNT],
+    cur_report: KeyboardReport,
+    next_report: KeyboardReport,
 }
 
 const BLANK_REPORT: KeyboardReport = KeyboardReport {
@@ -202,12 +217,22 @@ impl<S: SuspendNotifier> UsbContext<S> {
         }
 
         if report_keycode_idx > 5 {
-            self.hid_class.push_input(&ROLLOVER_REPORT).ok();
-        } else {
-            self.hid_class.push_input(&report).ok();
-            if report_keycode_idx != 0 {
-                // Delay a tiny bit after sending a keystroke to avoid double-sent key strokes (there's probably a better solution here).
-                delay_ms(25)
+            report = ROLLOVER_REPORT;
+        }
+
+        // If the next report timeout has happened, send it and load this one as next
+        unsafe {
+            if MILLI_COUNTDOWN < 10 {
+                self.hid_class.push_input(&self.next_report).ok();
+                self.cur_report = self.next_report;
+                self.next_report = report;
+                MILLI_COUNTDOWN = 15
+            } else {
+                self.hid_class.push_input(&self.cur_report).ok();
+                if !reports_are_equal(self.next_report, report) {
+                    self.next_report = report;
+                    MILLI_COUNTDOWN = 15
+                }
             }
         }
 
@@ -223,4 +248,19 @@ impl<S: SuspendNotifier> UsbContext<S> {
             }
         }
     }
+}
+
+// This system returns `true` if the following are identical for the provided reports:
+// * Modifier value
+// * Keycode array (order-sensitive)
+fn reports_are_equal(a: KeyboardReport, b: KeyboardReport) -> bool {
+    if a.modifier != b.modifier {
+        return false;
+    }
+    for i in 0..6 {
+        if a.keycodes[i] != b.keycodes[i] {
+            return false;
+        }
+    }
+    true
 }
