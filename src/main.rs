@@ -12,6 +12,7 @@ mod keymap;
 mod descriptor;
 
 use arduino_hal::{
+    delay_ms,
     pac::PLL,
     port::{
         mode::{Input, Output, PullUp},
@@ -204,6 +205,10 @@ impl<S: SuspendNotifier> UsbContext<S> {
             self.hid_class.push_input(&ROLLOVER_REPORT).ok();
         } else {
             self.hid_class.push_input(&report).ok();
+            if report_keycode_idx != 0 {
+                // Delay a tiny bit after sending a keystroke to avoid double-sent key strokes (there's probably a better solution here).
+                delay_ms(25)
+            }
         }
 
         if self.usb_device.poll(&mut [&mut self.hid_class]) {
