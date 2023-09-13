@@ -135,6 +135,13 @@ const BLANK_REPORT: KeyboardReport = KeyboardReport {
     keycodes: [0; 6],
 };
 
+const ROLLOVER_REPORT: KeyboardReport = KeyboardReport {
+    modifier: 0,
+    reserved: 0,
+    leds: 0,
+    keycodes: [LayoutKey::URol as u8, 0, 0, 0, 0, 0],
+};
+
 const MUX_COLUMN_COUNT: usize = COLUMN_COUNT / 2;
 
 impl<S: SuspendNotifier> UsbContext<S> {
@@ -172,7 +179,7 @@ impl<S: SuspendNotifier> UsbContext<S> {
 
             // Check for active rows within the column
             for row in 0..ROW_COUNT {
-                if self.rows[row].is_low() {
+                if self.rows[row].is_low() && report_keycode_idx < 6 {
                     // If the key is a modifier, apply the appropriate bitmask instead of recording it as a keystroke.
                     // https://wiki.osdev.org/USB_Human_Interface_Devices#Report_format
                     match self.layout[row][col] {
@@ -193,7 +200,11 @@ impl<S: SuspendNotifier> UsbContext<S> {
             }
         }
 
-        self.hid_class.push_input(&report).ok();
+        if report_keycode_idx > 5 {
+            self.hid_class.push_input(&ROLLOVER_REPORT).ok();
+        } else {
+            self.hid_class.push_input(&report).ok();
+        }
 
         if self.usb_device.poll(&mut [&mut self.hid_class]) {
             let mut report_buf = [0u8; 1];
