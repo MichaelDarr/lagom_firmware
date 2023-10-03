@@ -6,6 +6,17 @@ pub const ROW_COUNT: usize = 5;
 
 pub type LayoutGrid = [[LayoutKey; COLUMN_COUNT]; ROW_COUNT];
 
+pub struct RotaryEncoderKeys {
+  pub clockwise: LayoutKey,
+  pub counter_clockwise: LayoutKey,
+}
+
+pub struct Keyboard {
+  pub layout: LayoutGrid,
+  pub left_rotary_encoder: RotaryEncoderKeys,
+  pub right_rotary_encoder: RotaryEncoderKeys,
+}
+
 // Keyboard key usage ids that can be used in KeyboardReport
 //
 // Values sourced from chromium:

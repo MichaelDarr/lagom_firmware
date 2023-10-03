@@ -33,6 +33,7 @@ git = "https://github.com/agausmann/atmega-usbd"
 rev = "5fc68ca813ce0a37dab65dd4d66efe1ec125f2a8"
 
 [profile.dev]
+codegen-units = 1
 lto = true
 opt-level = "s"
 

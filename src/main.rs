@@ -10,7 +10,6 @@ mod keymap;
 mod std_stub;
 
 use arduino_hal::{
-    delay_ms,
     pac::PLL,
     port::{
         mode::{Input, Output, PullUp},
@@ -18,7 +17,11 @@ use arduino_hal::{
     },
 };
 use atmega_usbd::{SuspendNotifier, UsbBus};
-use avr_device::interrupt;
+use avr_device::{
+    atmega32u4::TC1,
+    interrupt,
+    
+};
 use descriptor::{LayoutKey, COLUMN_COUNT, ROW_COUNT};
 use usb_device::{
     class_prelude::UsbBusAllocator,
@@ -59,12 +62,18 @@ fn main() -> ! {
         .product("Lagom")
         .build();
 
+    
+    let clock = TC1Clock::new(dp.TC1);
+    let debounce_origin = clock.try_now();
+
     unsafe {
         USB_CTX = Some(UsbContext {
             usb_device,
+            clock: clock,
+            debounce_origin,
             hid_class,
             indicator: pins.led_rx.into_output().downgrade(),
-            layout: keymap::LAYOUT,
+            keyboard: keymap::KEYBOARD,
             mux0: pins.d6.into_output().downgrade(),
             mux1: pins.d7.into_output().downgrade(),
             mux2: pins.d8.into_output().downgrade(),
@@ -93,21 +102,8 @@ fn main() -> ! {
 
     unsafe { interrupt::enable() };
 
-    loop {
-        unsafe {
-            if MILLI_COUNTDOWN > 2 {
-                MILLI_COUNTDOWN -= 2;
-            }
-        }
-        delay_ms(2)
-    }
+    loop {}
 }
-
-// While it's positive, this constantly counts down to 1 or 0 in increments of 2. It is used to
-// maintain a debouncing system for keystrokes.
-//
-// This should be replaced with a proper clock - it's likely buggy and potententially dangerous.
-static mut MILLI_COUNTDOWN: u32 = 0;
 
 static mut USB_CTX: Option<UsbContext<PLL>> = None;
 
@@ -141,9 +137,11 @@ unsafe fn poll_usb() {
 
 struct UsbContext<S: SuspendNotifier> {
     usb_device: UsbDevice<'static, UsbBus<S>>,
+    debounce_origin: u16,
+    clock: TC1Clock,
     hid_class: HIDClass<'static, UsbBus<S>>,
     indicator: Pin<Output>,
-    layout: descriptor::LayoutGrid,
+    keyboard: descriptor::Keyboard,
     mux0: Pin<Output>,
     mux1: Pin<Output>,
     mux2: Pin<Output>,
@@ -175,15 +173,29 @@ impl<S: SuspendNotifier> UsbContext<S> {
         let mut report = BLANK_REPORT;
         let mut report_keycode_idx: usize = 0;
 
-        let encoder_0_res = self.rotarty_encoders[1].poll();
-        if encoder_0_res.is_some() {
-            let mut rotary_report = BLANK_REPORT;
-            if encoder_0_res.unwrap() == RotaryEncoderDirection::Clockwise {
-                rotary_report.keycodes[0] = LayoutKey::VlUp as u8;
+        let encoder_right_res = self.rotarty_encoders[0].poll();
+        if encoder_right_res.is_some() {
+            let mut left_rotary_report = BLANK_REPORT;
+            if encoder_right_res.unwrap() == RotaryEncoderDirection::Clockwise {
+                left_rotary_report.keycodes[0] = self.keyboard.left_rotary_encoder.clockwise as u8;
             } else {
-                rotary_report.keycodes[0] = LayoutKey::VlDn as u8;
+                left_rotary_report.keycodes[0] =
+                    self.keyboard.left_rotary_encoder.counter_clockwise as u8;
             }
-            self.hid_class.push_input(&rotary_report).ok();
+            self.hid_class.push_input(&left_rotary_report).ok();
+        }
+
+        let encoder_left_res = self.rotarty_encoders[1].poll();
+        if encoder_left_res.is_some() {
+            let mut right_rotary_report = BLANK_REPORT;
+            if encoder_left_res.unwrap() == RotaryEncoderDirection::Clockwise {
+                right_rotary_report.keycodes[0] =
+                    self.keyboard.right_rotary_encoder.clockwise as u8;
+            } else {
+                right_rotary_report.keycodes[0] =
+                    self.keyboard.right_rotary_encoder.counter_clockwise as u8;
+            }
+            self.hid_class.push_input(&right_rotary_report).ok();
         }
 
         // Start with demultiplexer C2 (cols 0-7)
@@ -219,7 +231,7 @@ impl<S: SuspendNotifier> UsbContext<S> {
                 if self.rows[row].is_low() && report_keycode_idx < 6 {
                     // If the key is a modifier, apply the appropriate bitmask instead of recording it as a keystroke.
                     // https://wiki.osdev.org/USB_Human_Interface_Devices#Report_format
-                    match self.layout[row][col] {
+                    match self.keyboard.layout[row][col] {
                         LayoutKey::CtrL => report.modifier |= 0b0000_0001,
                         LayoutKey::SftL => report.modifier |= 0b0000_0010,
                         LayoutKey::AltL => report.modifier |= 0b0000_0100,
@@ -229,7 +241,8 @@ impl<S: SuspendNotifier> UsbContext<S> {
                         LayoutKey::AltR => report.modifier |= 0b0100_0000,
                         LayoutKey::GuiR => report.modifier |= 0b1000_0000,
                         _ => {
-                            report.keycodes[report_keycode_idx] = self.layout[row][col] as u8;
+                            report.keycodes[report_keycode_idx] =
+                                self.keyboard.layout[row][col] as u8;
                             report_keycode_idx += 1;
                         }
                     }
@@ -241,25 +254,31 @@ impl<S: SuspendNotifier> UsbContext<S> {
             report = ROLLOVER_REPORT;
         }
 
-        // If the next report timeout has happened, send it and load this one as next
-        unsafe {
-            if MILLI_COUNTDOWN < 10 {
-                self.hid_class.push_input(&self.next_report).ok();
-                self.cur_report = self.next_report;
+        // Keep sending the current report until the next report has remained stable for 5 ms, then begin sending that.
+        let now = self.clock.try_now();
+
+        let diff = if now >= self.debounce_origin {
+            now - self.debounce_origin
+        } else {
+            (u16::MAX - self.debounce_origin) + now
+        };
+
+        // roughly 5ms
+        if diff < 300 {
+            self.hid_class.push_input(&self.cur_report).ok();
+            if !reports_are_equal(self.next_report, report) {
                 self.next_report = report;
-                MILLI_COUNTDOWN = 15
-            } else {
-                self.hid_class.push_input(&self.cur_report).ok();
-                if !reports_are_equal(self.next_report, report) {
-                    self.next_report = report;
-                    MILLI_COUNTDOWN = 15
-                }
+                self.debounce_origin = now
             }
+        } else {
+            self.hid_class.push_input(&self.next_report).ok();
+            self.cur_report = self.next_report;
+            self.next_report = report;
+            self.debounce_origin = now
         }
 
         if self.usb_device.poll(&mut [&mut self.hid_class]) {
             let mut report_buf = [0u8; 1];
-
             if self.hid_class.pull_raw_output(&mut report_buf).is_ok() {
                 if report_buf[0] & 2 != 0 {
                     self.indicator.set_high();
@@ -356,5 +375,31 @@ impl RotaryEncoder {
             self.state = [a_state, b_state];
         }
         None
+    }
+}
+
+struct TC1Clock {
+    tc1: TC1,
+}
+
+impl TC1Clock {
+    pub fn new(tc1: TC1) -> TC1Clock {
+        //          100 | Clock source       | clk/256 (prescaled)
+        //       0_0    | Mode               | normal mode (go up to 0xFFFF, then roll around to 0)
+        //      0       | n/a                | reserved
+        //     0        | Input capture edge | falling edge used as trigger on input capture pin (ICPn)
+        //    0         | Noise canceler     | disabled
+        tc1.tccr1b.write(|w| unsafe { w.bits(
+            0b0000_0100
+        )});
+        TC1Clock {
+            tc1,
+        }
+    }
+}
+
+impl TC1Clock {
+    fn try_now(&self) -> u16 {
+        self.tc1.tcnt1.read().bits()
     }
 }
